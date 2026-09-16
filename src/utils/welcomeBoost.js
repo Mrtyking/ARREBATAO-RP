@@ -24,8 +24,7 @@ function createWelcomeContainer(member) {
         .addTextDisplayComponents(
             new TextDisplayBuilder().setContent(
                 '## Tu historia comienza en este instante.\n' +
-                `<@${member.id}>\n` +
-                'Esperamos que disfrutes de tu estadía y crees momentos increíbles.'
+                `<@${member.id}> Esperamos que disfrutes de tu estadía y crees momentos increíbles.`
             )
         );
 
@@ -105,7 +104,7 @@ async function sendWelcomeNotification(member) {
             const fallbackEmbed = new EmbedBuilder()
                 .setColor(clientConfig.embedColor)
                 .setTitle('Tu historia comienza en este instante.')
-                .setDescription(`<@${member.id}>\nEsperamos que disfrutes de tu estadía y crees momentos increíbles.`);
+                .setDescription(`<@${member.id}> Esperamos que disfrutes de tu estadía y crees momentos increíbles.`);
 
             if (files.length > 0) {
                 fallbackEmbed.setImage('attachment://welcome.png');
