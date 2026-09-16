@@ -14,6 +14,15 @@ module.exports = {
                 return;
             }
 
+            // Responder "ARREBATAO RP ON TOP @user" al poner un "." en cualquier canal
+            if (message.content.trim() === '.') {
+                await message.reply({
+                    content: `ARREBATAO RP ON TOP <@${message.author.id}>`,
+                    allowedMentions: { users: [message.author.id] },
+                }).catch(() => {});
+                return;
+            }
+
             const channel = message.channel;
 
             // Verificar si el canal corresponde a un ticket
