@@ -42,7 +42,7 @@ module.exports = {
                     const warnEmbed = new EmbedBuilder()
                         .setColor(clientConfig.embedColor)
                         .setTitle('Ticket No Reclamado')
-                        .setDescription('Para responder en este canal debes presionar el botón **Reclamar Ticket** primero (o usar `/bypass`).')
+                        .setDescription('Para responder en este canal debes presionar el botón **Reclamar Ticket** primero.')
                         .setFooter({ text: 'Este aviso se eliminará automáticamente en 5 segundos.' });
 
                     const warnMsg = await channel.send({
@@ -70,7 +70,7 @@ module.exports = {
                     const warnEmbed = new EmbedBuilder()
                         .setColor(clientConfig.embedColor)
                         .setTitle('Ticket Asignado')
-                        .setDescription(`Este caso está siendo atendido por ${claimerMention}. Solo el staff encargado puede responder (o utiliza \`/bypass\`).`)
+                        .setDescription(`Este caso está siendo atendido por ${claimerMention}. Solo el staff encargado tiene permitido responder.`)
                         .setFooter({ text: 'Este aviso se eliminará automáticamente en 5 segundos.' });
 
                     const warnMsg = await channel.send({
