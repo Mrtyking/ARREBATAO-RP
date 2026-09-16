@@ -50,8 +50,7 @@ function createBoostContainer(member) {
         .addTextDisplayComponents(
             new TextDisplayBuilder().setContent(
                 '## ¡Nuevo Impulso en el Servidor!\n' +
-                `<@${member.id}>\n` +
-                '¡Muchísimas gracias por impulsar a **ARREBATAO RP**!\n' +
+                `<@${member.id}> ¡Muchísimas gracias por impulsar a **ARREBATAO RP**!\n` +
                 'Tu apoyo ayuda a que nuestra comunidad siga creciendo y alcanzando el mejor nivel.'
             )
         );
@@ -92,9 +91,8 @@ async function sendWelcomeNotification(member) {
         const container = createWelcomeContainer(member);
 
         try {
-            // Envío con Discord Components V2
+            // Envío con Discord Components V2 (content no está permitido en la raíz con IsComponentsV2)
             await channel.send({
-                content: `<@${member.id}>`,
                 files,
                 components: [container],
                 flags: MessageFlags.IsComponentsV2,
@@ -153,9 +151,8 @@ async function sendBoostNotification(member) {
         const container = createBoostContainer(member);
 
         try {
-            // Envío con Discord Components V2
+            // Envío con Discord Components V2 (content no está permitido en la raíz con IsComponentsV2)
             await channel.send({
-                content: `<@${member.id}>`,
                 files,
                 components: [container],
                 flags: MessageFlags.IsComponentsV2,
