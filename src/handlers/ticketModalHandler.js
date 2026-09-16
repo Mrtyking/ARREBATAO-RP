@@ -6,6 +6,9 @@ const {
     PermissionFlagsBits,
     EmbedBuilder,
     MessageFlags,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    SeparatorBuilder,
 } = require('discord.js');
 const { clientConfig, categories } = require('../config/config');
 const { getTicketPermissions } = require('../utils/permissions');
@@ -210,25 +213,51 @@ async function handleTicketModalSubmit(interaction) {
 
         // 7. Enviar registro al canal de logs si está configurado
         if (clientConfig.logsChannelId) {
-            const logsChannel = interaction.guild.channels.cache.get(clientConfig.logsChannelId);
+            const logsChannel = interaction.guild.channels.cache.get(clientConfig.logsChannelId) ||
+                await interaction.guild.channels.fetch(clientConfig.logsChannelId).catch(() => null);
+
             if (logsChannel && logsChannel.isTextBased()) {
                 const categoryDisplay = categoryConfig.emoji
                     ? `${categoryConfig.emoji} ${categoryConfig.name}`
                     : categoryConfig.name;
 
-                const logEmbed = new EmbedBuilder()
-                    .setColor(clientConfig.embedColor)
-                    .setTitle('Nuevo Ticket Creado')
-                    .addFields(
-                        { name: 'Canal', value: `${ticketChannel} (\`${ticketChannel.name}\`)`, inline: true },
-                        { name: 'Usuario', value: `<@${interaction.user.id}> (\`${interaction.user.id}\`)`, inline: true },
-                        { name: 'Categoría', value: categoryDisplay, inline: true },
-                        { name: 'Fecha y Hora', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                const logContainer = new ContainerBuilder()
+                    .setAccentColor(0x990000)
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '## Nuevo Ticket Creado\n' +
+                            `**Canal:** <#${ticketChannel.id}> ( \`${ticketChannel.name}\` )\n` +
+                            `**Usuario:** <@${interaction.user.id}> ( \`${interaction.user.id}\` )\n` +
+                            `**Categoría:** ${categoryDisplay}\n` +
+                            `**Fecha y Hora:** <t:${Math.floor(Date.now() / 1000)}:F>`
+                        )
                     )
-                    .setFooter({ text: clientConfig.footerText })
-                    .setTimestamp();
+                    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(clientConfig.footerText)
+                    );
 
-                await logsChannel.send({ embeds: [logEmbed] }).catch(() => {});
+                try {
+                    await logsChannel.send({
+                        components: [logContainer],
+                        flags: MessageFlags.IsComponentsV2,
+                    });
+                } catch (logErr) {
+                    console.error('[LOG V2] Error al enviar log V2, usando fallback:', logErr);
+                    const logEmbed = new EmbedBuilder()
+                        .setColor(clientConfig.embedColor)
+                        .setTitle('Nuevo Ticket Creado')
+                        .addFields(
+                            { name: 'Canal', value: `${ticketChannel} (\`${ticketChannel.name}\`)`, inline: true },
+                            { name: 'Usuario', value: `<@${interaction.user.id}> (\`${interaction.user.id}\`)`, inline: true },
+                            { name: 'Categoría', value: categoryDisplay, inline: true },
+                            { name: 'Fecha y Hora', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                        )
+                        .setFooter({ text: clientConfig.footerText })
+                        .setTimestamp();
+
+                    await logsChannel.send({ embeds: [logEmbed] }).catch(() => {});
+                }
             }
         }
 

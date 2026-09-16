@@ -363,8 +363,18 @@ async function handleFeedbackModalSubmit(interaction) {
             console.error('Error al enviar valoración:', fbErr);
         }
 
-        // Ejecutar cierre definitivo
-        await executeTicketClosure(channel, interaction.user, `Ticket calificado (${rating}/5): ${comment}`, interaction.client, creatorId);
+        // Ejecutar cierre definitivo con datos estructurados y campos separados
+        await executeTicketClosure(
+            channel,
+            interaction.user,
+            {
+                estado: 'Cerrado y Valorado',
+                rating,
+                comment,
+            },
+            interaction.client,
+            creatorId
+        );
     } catch (error) {
         console.error('Error al procesar modal de valoración:', error);
         closingTickets.delete(interaction.channel.id);
@@ -409,7 +419,16 @@ async function handleRateCancel(interaction) {
             content: '**Cierre sin valoración.** El ticket se archivará y eliminará en 5 segundos...',
         }).catch(() => {});
 
-        await executeTicketClosure(channel, interaction.user, 'Ticket cerrado sin valoración', interaction.client, creatorId);
+        await executeTicketClosure(
+            channel,
+            interaction.user,
+            {
+                estado: 'Cerrado sin Valoración',
+                motivo: 'Cierre directo sin valoración',
+            },
+            interaction.client,
+            creatorId
+        );
     } catch (error) {
         console.error('Error al cancelar valoración y cerrar ticket:', error);
         closingTickets.delete(interaction.channel.id);
@@ -418,17 +437,43 @@ async function handleRateCancel(interaction) {
 
 /**
  * Ejecuta el cierre definitivo de un canal de ticket:
- * Genera transcripción HTML, envía copias a logs y MD del creador, y elimina el canal
+ * Genera transcripción HTML, envía copias a logs y MD del creador con Discord Components V2, y elimina el canal
  *
  * @param {import('discord.js').GuildChannel} channel
  * @param {import('discord.js').User} closedByUser
- * @param {string} reason
+ * @param {string|object} closureData - Motivo (string) o { estado, rating, comment, motivo }
  * @param {import('discord.js').Client} client
  * @param {string|null} creatorId
  */
-async function executeTicketClosure(channel, closedByUser, reason, client, creatorId = null) {
+async function executeTicketClosure(channel, closedByUser, closureData, client, creatorId = null) {
     if (!channel) return;
     if (!creatorId) creatorId = getTicketCreatorId(channel);
+
+    // Normalizar datos de cierre con campos totalmente separados
+    let estado = 'Cerrado';
+    let rating = null;
+    let comment = null;
+    let motivo = null;
+
+    if (typeof closureData === 'object' && closureData !== null) {
+        estado = closureData.estado || 'Cerrado';
+        rating = closureData.rating || null;
+        comment = closureData.comment || null;
+        motivo = closureData.motivo || null;
+    } else if (typeof closureData === 'string') {
+        const match = closureData.match(/^Ticket calificado \((\d)\/5\):\s*(.*)$/);
+        if (match) {
+            estado = 'Cerrado y Valorado';
+            rating = parseInt(match[1], 10);
+            comment = match[2];
+        } else if (closureData === 'Ticket cerrado sin valoración') {
+            estado = 'Cerrado sin Valoración';
+            motivo = 'Cierre directo sin valoración';
+        } else {
+            estado = 'Cerrado';
+            motivo = closureData;
+        }
+    }
 
     // 1. Generar transcripción HTML completa
     let transcriptAttachment = null;
@@ -445,57 +490,187 @@ async function executeTicketClosure(channel, closedByUser, reason, client, creat
         console.error('Error al generar transcripción HTML:', transcriptError);
     }
 
-    // 2. Enviar al canal de logs si está configurado
+    // 2. Enviar al canal de logs con Components V2 (y fallback a Embed clásico)
     if (clientConfig.logsChannelId && transcriptAttachment) {
         try {
             const logsChannel = channel.guild.channels.cache.get(clientConfig.logsChannelId) ||
                 await channel.guild.channels.fetch(clientConfig.logsChannelId).catch(() => null);
 
             if (logsChannel && logsChannel.isTextBased()) {
-                const logEmbed = new EmbedBuilder()
-                    .setColor(clientConfig.embedColor)
-                    .setTitle('Ticket Cerrado - Transcripción Archivada')
-                    .addFields(
-                        { name: 'Canal / Ticket', value: `\`${channel.name}\``, inline: true },
-                        { name: 'Cerrado por', value: `<@${closedByUser.id}> (\`${closedByUser.id}\`)`, inline: true },
-                        { name: 'Creador', value: creatorId ? `<@${creatorId}> (\`${creatorId}\`)` : '*Desconocido*', inline: true },
-                        { name: 'Motivo / Estado', value: reason, inline: false },
-                        { name: 'Fecha y Hora', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
-                    )
-                    .setFooter({ text: clientConfig.footerText })
-                    .setTimestamp();
+                let logDetails = `**Canal / Ticket**\n\`${channel.name}\`\n\n` +
+                    `**Cerrado por**\n<@${closedByUser.id}> ( \`${closedByUser.id}\` )\n\n` +
+                    `**Creador**\n${creatorId ? `<@${creatorId}> ( \`${creatorId}\` )` : '*Desconocido*'}\n\n` +
+                    `**Estado**\n${estado}`;
 
-                await logsChannel.send({
-                    embeds: [logEmbed],
-                    files: [transcriptAttachment],
-                }).catch(err => console.error('Error al enviar log de cierre:', err));
+                if (rating) {
+                    const starsString = '⭐'.repeat(rating);
+                    logDetails += `\n\n**Calificación**\n${rating} / 5 Estrellas ( ${starsString} )`;
+                    if (comment && comment !== 'Sin comentario adicional') {
+                        logDetails += `\n\n**Comentario**\n*"${comment}"*`;
+                    }
+                }
+
+                if (motivo) {
+                    logDetails += `\n\n**Motivo**\n${motivo}`;
+                }
+
+                logDetails += `\n\n**Fecha y Hora**\n<t:${Math.floor(Date.now() / 1000)}:F>`;
+
+                const logContainer = new ContainerBuilder()
+                    .setAccentColor(0x990000)
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '## Ticket Cerrado - Transcripción Archivada\n' +
+                            'El ticket ha sido archivado y cerrado correctamente.'
+                        )
+                    )
+                    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(logDetails)
+                    )
+                    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(clientConfig.footerText)
+                    );
+
+                try {
+                    await logsChannel.send({
+                        components: [logContainer],
+                        files: [transcriptAttachment],
+                        flags: MessageFlags.IsComponentsV2,
+                    });
+                } catch (logV2Err) {
+                    console.error('[LOG CLOSE V2] Error enviando log V2, usando fallback:', logV2Err);
+                    const logEmbed = new EmbedBuilder()
+                        .setColor(clientConfig.embedColor)
+                        .setTitle('Ticket Cerrado - Transcripción Archivada')
+                        .addFields(
+                            { name: 'Canal / Ticket', value: `\`${channel.name}\``, inline: true },
+                            { name: 'Cerrado por', value: `<@${closedByUser.id}> (\`${closedByUser.id}\`)`, inline: true },
+                            { name: 'Creador', value: creatorId ? `<@${creatorId}> (\`${creatorId}\`)` : '*Desconocido*', inline: true },
+                            { name: 'Estado', value: estado, inline: true }
+                        );
+
+                    if (rating) {
+                        logEmbed.addFields(
+                            { name: 'Calificación', value: `${rating} / 5 Estrellas ( ${'⭐'.repeat(rating)} )`, inline: false }
+                        );
+                        if (comment && comment !== 'Sin comentario adicional') {
+                            logEmbed.addFields(
+                                { name: 'Comentario', value: `*"${comment}"*`, inline: false }
+                            );
+                        }
+                    }
+
+                    if (motivo) {
+                        logEmbed.addFields(
+                            { name: 'Motivo', value: motivo, inline: false }
+                        );
+                    }
+
+                    logEmbed.addFields(
+                        { name: 'Fecha y Hora', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                    );
+                    logEmbed.setFooter({ text: clientConfig.footerText }).setTimestamp();
+
+                    await logsChannel.send({
+                        embeds: [logEmbed],
+                        files: [transcriptAttachment],
+                    }).catch(err => console.error('Error al enviar fallback de log de cierre:', err));
+                }
             }
         } catch (logErr) {
             console.error('Error al procesar logs de cierre:', logErr);
         }
     }
 
-    // 3. Intentar enviar transcripción por mensaje directo (DM) al usuario creador
+    // 3. Intentar enviar transcripción por mensaje directo (DM) al usuario creador con Components V2
     if (creatorId && transcriptAttachment) {
         try {
             const creatorUser = await client.users.fetch(creatorId).catch(() => null);
             if (creatorUser) {
-                const dmEmbed = new EmbedBuilder()
-                    .setColor(clientConfig.embedColor)
-                    .setTitle('Tu ticket en ARREBATAO RP ha sido cerrado')
-                    .setDescription(
-                        `Hola <@${creatorId}>, tu ticket **#${channel.name}** ha finalizado.\n\n` +
-                        `• **Cerrado por:** ${closedByUser.tag || closedByUser.username}\n` +
-                        `• **Motivo / Estado:** ${reason}\n\n` +
-                        'Adjunto a este mensaje encontrarás la **transcripción completa en formato HTML** con todos los mensajes y archivos compartidos.'
-                    )
-                    .setFooter({ text: clientConfig.footerText })
-                    .setTimestamp();
+                let dmDetails = `**Cerrado por**\n<@${closedByUser.id}> ( \`${closedByUser.tag || closedByUser.username}\` )\n\n` +
+                    `**Estado**\n${estado}`;
 
-                await creatorUser.send({
-                    embeds: [dmEmbed],
-                    files: [transcriptAttachment],
-                }).catch(() => {});
+                if (rating) {
+                    const starsString = '⭐'.repeat(rating);
+                    dmDetails += `\n\n**Calificación**\n${rating} / 5 Estrellas ( ${starsString} )`;
+                    if (comment && comment !== 'Sin comentario adicional') {
+                        dmDetails += `\n\n**Comentario**\n*"${comment}"*`;
+                    }
+                }
+
+                if (motivo) {
+                    dmDetails += `\n\n**Motivo**\n${motivo}`;
+                }
+
+                const dmContainer = new ContainerBuilder()
+                    .setAccentColor(0x990000)
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '## Tu ticket en ARREBATAO RP ha sido cerrado\n' +
+                            `Hola <@${creatorId}>, tu ticket **#${channel.name}** ha finalizado.`
+                        )
+                    )
+                    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(dmDetails)
+                    )
+                    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            'Adjunto a este mensaje encontrarás la **transcripción completa en formato HTML** con todos los mensajes y archivos compartidos.'
+                        )
+                    )
+                    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(clientConfig.footerText)
+                    );
+
+                try {
+                    await creatorUser.send({
+                        components: [dmContainer],
+                        files: [transcriptAttachment],
+                        flags: MessageFlags.IsComponentsV2,
+                    });
+                } catch (dmV2Err) {
+                    console.log(`[DM V2] Error enviando DM V2 (${dmV2Err.message}), usando fallback:`);
+                    const dmEmbed = new EmbedBuilder()
+                        .setColor(clientConfig.embedColor)
+                        .setTitle('Tu ticket en ARREBATAO RP ha sido cerrado')
+                        .setDescription(
+                            `Hola <@${creatorId}>, tu ticket **#${channel.name}** ha finalizado.\n\n` +
+                            'Adjunto a este mensaje encontrarás la **transcripción completa en formato HTML** con todos los mensajes y archivos compartidos.'
+                        )
+                        .addFields(
+                            { name: 'Cerrado por', value: `${closedByUser.tag || closedByUser.username}`, inline: true },
+                            { name: 'Estado', value: estado, inline: true }
+                        );
+
+                    if (rating) {
+                        dmEmbed.addFields(
+                            { name: 'Calificación', value: `${rating} / 5 Estrellas ( ${'⭐'.repeat(rating)} )`, inline: false }
+                        );
+                        if (comment && comment !== 'Sin comentario adicional') {
+                            dmEmbed.addFields(
+                                { name: 'Comentario', value: `*"${comment}"*`, inline: false }
+                            );
+                        }
+                    }
+
+                    if (motivo) {
+                        dmEmbed.addFields(
+                            { name: 'Motivo', value: motivo, inline: false }
+                        );
+                    }
+
+                    dmEmbed.setFooter({ text: clientConfig.footerText }).setTimestamp();
+
+                    await creatorUser.send({
+                        embeds: [dmEmbed],
+                        files: [transcriptAttachment],
+                    }).catch(() => {});
+                }
             }
         } catch (dmErr) {
             console.log(`No se pudo enviar MD al creador (${creatorId}): ${dmErr.message}`);
@@ -506,7 +681,10 @@ async function executeTicketClosure(channel, closedByUser, reason, client, creat
     setTimeout(async () => {
         try {
             if (channel.deletable) {
-                await channel.delete(`Ticket cerrado por ${closedByUser.tag || closedByUser.username}: ${reason}`);
+                const auditReason = motivo
+                    ? `Ticket cerrado por ${closedByUser.tag || closedByUser.username}: [${estado}] ${motivo}`
+                    : `Ticket cerrado por ${closedByUser.tag || closedByUser.username}: [${estado}]`;
+                await channel.delete(auditReason);
             }
         } catch (delErr) {
             console.error('Error al eliminar canal de ticket:', delErr);
@@ -535,7 +713,15 @@ async function handleCloseTicketSubmit(interaction) {
             ephemeral: true,
         });
 
-        await executeTicketClosure(interaction.channel, interaction.user, reason, interaction.client);
+        await executeTicketClosure(
+            interaction.channel,
+            interaction.user,
+            {
+                estado: 'Cerrado por Staff',
+                motivo: reason,
+            },
+            interaction.client
+        );
     } catch (error) {
         console.error('Error en handleCloseTicketSubmit:', error);
     }
@@ -955,6 +1141,27 @@ async function handleGenerateTranscript(interaction) {
             poweredBy: false,
         });
 
+        const transcriptContainer = new ContainerBuilder()
+            .setAccentColor(0x990000)
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent(
+                    '## Transcripción del Ticket Generada\n' +
+                    `Transcripción generada bajo demanda por <@${interaction.user.id}>.`
+                )
+            )
+            .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent(
+                    `**Canal**\n\`${channel.name}\`\n\n` +
+                    `**Solicitado por**\n<@${interaction.user.id}> ( \`${interaction.user.tag}\` )\n\n` +
+                    `**Fecha**\n<t:${Math.floor(Date.now() / 1000)}:F>`
+                )
+            )
+            .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent(clientConfig.footerText)
+            );
+
         const transcriptEmbed = new EmbedBuilder()
             .setColor(clientConfig.embedColor)
             .setTitle('Transcripción del Ticket Generada')
@@ -968,19 +1175,36 @@ async function handleGenerateTranscript(interaction) {
             .setTimestamp();
 
         // Enviar al canal actual
-        await channel.send({
-            embeds: [transcriptEmbed],
-            files: [transcriptAttachment],
-        });
+        try {
+            await channel.send({
+                components: [transcriptContainer],
+                files: [transcriptAttachment],
+                flags: MessageFlags.IsComponentsV2,
+            });
+        } catch (v2Err) {
+            console.error('[TRANSCRIPT V2] Error enviando V2 al canal, usando fallback:', v2Err);
+            await channel.send({
+                embeds: [transcriptEmbed],
+                files: [transcriptAttachment],
+            });
+        }
 
         // Enviar al canal de logs si está disponible
         if (clientConfig.logsChannelId) {
             const logsChannel = interaction.guild.channels.cache.get(clientConfig.logsChannelId);
             if (logsChannel && logsChannel.isTextBased()) {
-                await logsChannel.send({
-                    embeds: [transcriptEmbed],
-                    files: [transcriptAttachment],
-                }).catch(() => {});
+                try {
+                    await logsChannel.send({
+                        components: [transcriptContainer],
+                        files: [transcriptAttachment],
+                        flags: MessageFlags.IsComponentsV2,
+                    });
+                } catch {
+                    await logsChannel.send({
+                        embeds: [transcriptEmbed],
+                        files: [transcriptAttachment],
+                    }).catch(() => {});
+                }
             }
         }
 
