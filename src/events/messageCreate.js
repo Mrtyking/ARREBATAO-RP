@@ -1,7 +1,8 @@
-const { Events, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
+const { Events, PermissionFlagsBits, EmbedBuilder, MessageType } = require('discord.js');
 const { categories, clientConfig } = require('../config/config');
 const { getTicketState } = require('../utils/ticketState');
 const { getTicketCreatorId } = require('../handlers/ticketControlHandler');
+const { sendBoostNotification } = require('../utils/welcomeBoost');
 
 module.exports = {
     name: Events.MessageCreate,
@@ -9,8 +10,20 @@ module.exports = {
 
     async execute(message) {
         try {
+            // Detectar mensaje de sistema por Boost en el servidor
+            if (message.guild && (
+                message.type === MessageType.UserPremiumGuildSubscription ||
+                message.type === MessageType.UserPremiumGuildSubscriptionTier1 ||
+                message.type === MessageType.UserPremiumGuildSubscriptionTier2 ||
+                message.type === MessageType.UserPremiumGuildSubscriptionTier3
+            )) {
+                if (message.member) {
+                    await sendBoostNotification(message.member);
+                }
+            }
+
             // Ignorar mensajes de bots o fuera de servidores
-            if (message.author.bot || !message.guild || !message.channel.isTextBased()) {
+            if (message.author?.bot || !message.guild || !message.channel.isTextBased()) {
                 return;
             }
 

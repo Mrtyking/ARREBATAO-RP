@@ -12,10 +12,14 @@ const clientConfig = {
     logsChannelId: process.env.LOGS_CHANNEL_ID || '',
     staffAlertsChannelId: process.env.STAFF_ALERTS_CHANNEL_ID || '1530125195694706769',
     feedbackChannelId: process.env.FEEDBACK_CHANNEL_ID || '1530125044603424868',
+    welcomeChannelId: process.env.WELCOME_CHANNEL_ID || '1530124755359891636',
+    boostChannelId: process.env.BOOST_CHANNEL_ID || '1530124939963793529',
     embedColor: '#990000',
     maxTicketsPerUser: 2,
     maxTicketsPerCategory: 1,
     bannerPath: path.resolve(__dirname, '../../assets/banner.jpg'),
+    welcomeImagePath: path.resolve(__dirname, '../../assets/welcome.png'),
+    boostImagePath: path.resolve(__dirname, '../../assets/boost.png'),
     footerText: 'ARREBATAO RP - Sistema de Tickets',
 };
 
