@@ -8,6 +8,10 @@ const {
     EmbedBuilder,
     PermissionFlagsBits,
     OverwriteType,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    SeparatorBuilder,
+    MessageFlags,
 } = require('discord.js');
 const discordTranscripts = require('discord-html-transcripts');
 const { clientConfig, categories } = require('../config/config');
@@ -121,17 +125,6 @@ async function handleCloseTicket(interaction) {
         setTicketCloseInitiator(channel, interaction.user.id);
         state.closeRequested = true;
 
-        const rateEmbed = new EmbedBuilder()
-            .setColor(clientConfig.embedColor)
-            .setTitle('VALORACIÓN DEL SERVICIO')
-            .setDescription(
-                (creatorId ? `Hola <@${creatorId}>, nuestro equipo ha completado la atención de tu ticket.\n\n` : 'El equipo ha completado la atención de este ticket.\n\n') +
-                'Por favor, califica la atención recibida seleccionando una opción del **1 al 5** a continuación.\n' +
-                '*Al calificar, el ticket se archivará y cerrará automáticamente.*\n\n' +
-                '*Si el usuario no está disponible o el staff desea cerrar de inmediato, presiona **Cerrar sin Calificar**.*'
-            )
-            .setFooter({ text: clientConfig.footerText });
-
         const starRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('ticket_rate_val_1').setLabel('1').setEmoji('⭐').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('ticket_rate_val_2').setLabel('2').setEmoji('⭐').setStyle(ButtonStyle.Secondary),
@@ -144,11 +137,48 @@ async function handleCloseTicket(interaction) {
             new ButtonBuilder().setCustomId('ticket_rate_cancel').setLabel('Cerrar sin Calificar').setStyle(ButtonStyle.Danger),
         );
 
-        await channel.send({
-            content: creatorId ? `<@${creatorId}>` : undefined,
-            embeds: [rateEmbed],
-            components: [starRow, cancelRow],
-        });
+        const rateContainer = new ContainerBuilder()
+            .setAccentColor(0x990000)
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent(
+                    '## VALORACIÓN DEL SERVICIO\n' +
+                    (creatorId ? `Hola <@${creatorId}>, nuestro equipo ha completado la atención de tu ticket.\n\n` : 'El equipo ha completado la atención de este ticket.\n\n') +
+                    'Por favor, califica la atención recibida seleccionando una opción del **1 al 5** a continuación.\n' +
+                    '*Al calificar, el ticket se archivará y cerrará automáticamente.*\n\n' +
+                    '*Si el usuario no está disponible o el staff desea cerrar de inmediato, presiona **Cerrar sin Calificar**.*'
+                )
+            )
+            .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+            .addActionRowComponents(starRow)
+            .addActionRowComponents(cancelRow)
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent('© ARREBATAO RP - Sistema de Tickets')
+            );
+
+        try {
+            await channel.send({
+                components: [rateContainer],
+                flags: MessageFlags.IsComponentsV2,
+            });
+        } catch (v2Err) {
+            console.error('[RATE V2] Error al enviar contenedor V2, usando fallback:', v2Err);
+            const rateEmbed = new EmbedBuilder()
+                .setColor(clientConfig.embedColor)
+                .setTitle('VALORACIÓN DEL SERVICIO')
+                .setDescription(
+                    (creatorId ? `Hola <@${creatorId}>, nuestro equipo ha completado la atención de tu ticket.\n\n` : 'El equipo ha completado la atención de este ticket.\n\n') +
+                    'Por favor, califica la atención recibida seleccionando una opción del **1 al 5** a continuación.\n' +
+                    '*Al calificar, el ticket se archivará y cerrará automáticamente.*\n\n' +
+                    '*Si el usuario no está disponible o el staff desea cerrar de inmediato, presiona **Cerrar sin Calificar**.*'
+                )
+                .setFooter({ text: clientConfig.footerText });
+
+            await channel.send({
+                content: creatorId ? `<@${creatorId}>` : undefined,
+                embeds: [rateEmbed],
+                components: [starRow, cancelRow],
+            });
+        }
 
         await interaction.reply({
             content: 'Solicitud de valoración enviada al ticket.',
@@ -268,29 +298,65 @@ async function handleFeedbackModalSubmit(interaction) {
                         year: 'numeric',
                     }).format(new Date());
 
-                    const feedbackEmbed = new EmbedBuilder()
-                        .setColor(clientConfig.embedColor)
-                        .setTitle('NUEVA VALORACIÓN RECIBIDA')
-                        .setDescription(`El usuario <@${interaction.user.id}> ha dejado su opinión sobre el servicio.`)
-                        .addFields(
-                            { name: 'Usuario', value: `<@${interaction.user.id}> ( \`${interaction.user.id}\` )`, inline: false },
-                            { name: 'Calificación', value: `${rating} / 5 Estrellas ( ${starsString} )`, inline: false },
-                            { name: 'Comentario', value: `*"${comment}"*`, inline: false }
+                    const feedbackContainer = new ContainerBuilder()
+                        .setAccentColor(0x990000)
+                        .addTextDisplayComponents(
+                            new TextDisplayBuilder().setContent(
+                                '## NUEVA VALORACIÓN RECIBIDA\n' +
+                                `El usuario <@${interaction.user.id}> ha dejado su opinión sobre el servicio.`
+                            )
+                        )
+                        .addSeparatorComponents(
+                            new SeparatorBuilder().setDivider(true)
+                        )
+                        .addTextDisplayComponents(
+                            new TextDisplayBuilder().setContent(
+                                `**Usuario**\n<@${interaction.user.id}> ( \`${interaction.user.id}\` )\n\n` +
+                                `**Calificación**\n${rating} / 5 Estrellas ( ${starsString} )\n\n` +
+                                `**Comentario**\n*"${comment}"*` +
+                                (staffId ? `\n\n**Atendido por**\n<@${staffId}> ( \`${staffId}\` )` : '')
+                            )
+                        )
+                        .addSeparatorComponents(
+                            new SeparatorBuilder().setDivider(true)
+                        )
+                        .addTextDisplayComponents(
+                            new TextDisplayBuilder().setContent(
+                                `© ARREBATAO RP - Review enviada el ${dateStr}`
+                            )
                         );
 
-                    if (staffId) {
-                        feedbackEmbed.addFields({
-                            name: 'Atendido por',
-                            value: `<@${staffId}> ( \`${staffId}\` )`,
-                            inline: false,
+                    try {
+                        await feedbackChannel.send({
+                            components: [feedbackContainer],
+                            flags: MessageFlags.IsComponentsV2,
+                        });
+                    } catch (v2Err) {
+                        console.error('[FEEDBACK V2] Error al enviar contenedor V2, usando fallback:', v2Err);
+                        const feedbackEmbed = new EmbedBuilder()
+                            .setColor(clientConfig.embedColor)
+                            .setTitle('NUEVA VALORACIÓN RECIBIDA')
+                            .setDescription(`El usuario <@${interaction.user.id}> ha dejado su opinión sobre el servicio.`)
+                            .addFields(
+                                { name: 'Usuario', value: `<@${interaction.user.id}> ( \`${interaction.user.id}\` )`, inline: false },
+                                { name: 'Calificación', value: `${rating} / 5 Estrellas ( ${starsString} )`, inline: false },
+                                { name: 'Comentario', value: `*"${comment}"*`, inline: false }
+                            );
+
+                        if (staffId) {
+                            feedbackEmbed.addFields({
+                                name: 'Atendido por',
+                                value: `<@${staffId}> ( \`${staffId}\` )`,
+                                inline: false,
+                            });
+                        }
+
+                        feedbackEmbed.setFooter({ text: `© ARREBATAO RP - Review enviada el ${dateStr}` });
+
+                        await feedbackChannel.send({ embeds: [feedbackEmbed] }).catch(err => {
+                            console.error('Error al enviar embed a canal de valoraciones:', err);
                         });
                     }
-
-                    feedbackEmbed.setFooter({ text: `© ARREBATAO RP - Review enviada el ${dateStr}` });
-
-                    await feedbackChannel.send({ embeds: [feedbackEmbed] }).catch(err => {
-                        console.error('Error al enviar embed a canal de valoraciones:', err);
-                    });
                 }
             }
         } catch (fbErr) {
