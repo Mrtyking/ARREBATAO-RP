@@ -82,6 +82,14 @@ function getTicketCreatorId(channel) {
  */
 async function handleCloseTicket(interaction) {
     try {
+        // Solo los miembros del Staff pueden cerrar tickets
+        if (!isStaffMember(interaction.member, interaction.channel)) {
+            return interaction.reply({
+                content: 'Solo los miembros del equipo de Staff tienen autorización para cerrar este ticket.',
+                ephemeral: true,
+            });
+        }
+
         const modal = new ModalBuilder()
             .setCustomId('modal_close_ticket_reason')
             .setTitle('Cierre de Ticket');
@@ -115,6 +123,14 @@ async function handleCloseTicket(interaction) {
  */
 async function handleCloseTicketSubmit(interaction) {
     try {
+        // Solo los miembros del Staff pueden procesar el cierre del ticket
+        if (!isStaffMember(interaction.member, interaction.channel)) {
+            return interaction.reply({
+                content: 'Solo los miembros del equipo de Staff tienen autorización para cerrar este ticket.',
+                ephemeral: true,
+            });
+        }
+
         const reason = interaction.fields.getTextInputValue('close_reason')?.trim() || 'Sin motivo especificado';
         const channel = interaction.channel;
         const creatorId = getTicketCreatorId(channel);
@@ -290,10 +306,96 @@ async function handleClaimTicket(interaction) {
     }
 }
 
-// Mapa de enfriamiento para limitar el botón Notificar Staff a máximo 3 veces cada 30 minutos (por canal)
-const notifyStaffCooldowns = new Map();
-const NOTIFY_WINDOW_MS = 30 * 60 * 1000; // 30 minutos
-const MAX_NOTIFY_PER_WINDOW = 3;
+// Control de notificaciones independiente por cada canal de ticket:
+// - Máximo 3 notificaciones en total durante todo el ciclo del ticket
+// - Cooldown de 30 minutos estrictos entre cada notificación
+// - Al llegar a 3, el botón se deshabilita permanentemente
+const ticketNotifyState = new Map();
+const NOTIFY_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos entre alertas
+const MAX_NOTIFICATIONS_PER_TICKET = 3;
+
+/**
+ * Obtiene el estado de notificaciones exclusivo de este canal de ticket
+ * @param {import('discord.js').GuildChannel} channel
+ * @returns {{ count: number, lastNotifiedAt: number }}
+ */
+function getChannelNotifyState(channel) {
+    if (ticketNotifyState.has(channel.id)) {
+        return ticketNotifyState.get(channel.id);
+    }
+    let count = 0;
+    let lastNotifiedAt = 0;
+    if (channel.topic) {
+        const cMatch = channel.topic.match(/Alertas:\s*(\d+)/);
+        if (cMatch) count = parseInt(cMatch[1], 10) || 0;
+        const tMatch = channel.topic.match(/UltimaAlerta:\s*(\d+)/);
+        if (tMatch) lastNotifiedAt = parseInt(tMatch[1], 10) || 0;
+    }
+    const state = { count, lastNotifiedAt };
+    ticketNotifyState.set(channel.id, state);
+    return state;
+}
+
+/**
+ * Actualiza y persiste el estado de alertas de este canal de ticket
+ * @param {import('discord.js').GuildChannel} channel
+ * @param {number} count
+ * @param {number} lastNotifiedAt
+ */
+function updateChannelNotifyState(channel, count, lastNotifiedAt) {
+    const state = { count, lastNotifiedAt };
+    ticketNotifyState.set(channel.id, state);
+
+    try {
+        let topic = channel.topic || '';
+        if (topic.includes('Alertas:')) {
+            topic = topic.replace(/Alertas:\s*\d+/, `Alertas: ${count}`);
+        } else {
+            topic = `${topic} | Alertas: ${count}`;
+        }
+        if (topic.includes('UltimaAlerta:')) {
+            topic = topic.replace(/UltimaAlerta:\s*\d+/, `UltimaAlerta: ${lastNotifiedAt}`);
+        } else {
+            topic = `${topic} | UltimaAlerta: ${lastNotifiedAt}`;
+        }
+        channel.setTopic(topic).catch(() => {});
+    } catch {}
+}
+
+/**
+ * Modifica el botón de Notificar Staff en el mensaje original del ticket
+ * @param {import('discord.js').Message} message
+ * @param {number} count
+ * @param {boolean} disabled
+ */
+function updateNotifyButtonInMessage(message, count, disabled) {
+    return message.components.map(topComp => {
+        const raw = topComp.toJSON();
+        const updateBtn = (btn) => {
+            if (btn.custom_id === 'ticket_control_notify') {
+                return {
+                    ...btn,
+                    label: disabled ? 'Notificaciones Agotadas (3/3)' : `Notificar Staff (${count}/3)`,
+                    style: disabled ? ButtonStyle.Secondary : btn.style,
+                    disabled: disabled,
+                };
+            }
+            return btn;
+        };
+
+        if (raw.type === 17 && Array.isArray(raw.components)) {
+            raw.components = raw.components.map(child => {
+                if (child.type === 1 && Array.isArray(child.components)) {
+                    child.components = child.components.map(updateBtn);
+                }
+                return child;
+            });
+        } else if (raw.type === 1 && Array.isArray(raw.components)) {
+            raw.components = raw.components.map(updateBtn);
+        }
+        return raw;
+    });
+}
 
 /**
  * Maneja el botón de notificar al Staff cuando un usuario requiere atención
@@ -304,21 +406,32 @@ async function handleNotifyStaff(interaction) {
     try {
         const channel = interaction.channel;
         const now = Date.now();
+        const notifyState = getChannelNotifyState(channel);
 
-        // Obtener historial de timestamps de alertas en este canal en los últimos 30 minutos
-        const channelTimestamps = (notifyStaffCooldowns.get(channel.id) || [])
-            .filter(ts => (now - ts) < NOTIFY_WINDOW_MS);
+        // 1. Si ya se alcanzó el límite absoluto de 3 alertas para este ticket:
+        if (notifyState.count >= MAX_NOTIFICATIONS_PER_TICKET) {
+            // Deshabilitar botón visualmente si aún no lo estaba
+            try {
+                const updatedComponents = updateNotifyButtonInMessage(interaction.message, 3, true);
+                await interaction.message.edit({ components: updatedComponents }).catch(() => {});
+            } catch {}
 
-        if (channelTimestamps.length >= MAX_NOTIFY_PER_WINDOW) {
-            const oldest = channelTimestamps[0];
-            const remainingMinutes = Math.ceil((NOTIFY_WINDOW_MS - (now - oldest)) / 60000);
             return interaction.reply({
-                content: `Has alcanzado el límite máximo de 3 notificaciones cada media hora para este ticket. Podrás volver a notificar al Staff en aproximadamente ${remainingMinutes} minuto(s).`,
+                content: 'Se ha alcanzado el límite máximo de 3 notificaciones para este ticket. El botón ha sido deshabilitado.',
                 ephemeral: true,
             });
         }
 
-        // Obtener la categoría del ticket desde el topic del canal
+        // 2. Comprobar que hayan pasado 30 minutos desde la última notificación enviada
+        if (notifyState.lastNotifiedAt > 0 && (now - notifyState.lastNotifiedAt) < NOTIFY_INTERVAL_MS) {
+            const remainingMinutes = Math.ceil((NOTIFY_INTERVAL_MS - (now - notifyState.lastNotifiedAt)) / 60000);
+            return interaction.reply({
+                content: `Debes esperar ${remainingMinutes} minuto(s) antes de volver a notificar al Staff (solo se permite 1 notificación cada media hora).`,
+                ephemeral: true,
+            });
+        }
+
+        // 3. Obtener la categoría del ticket desde el topic del canal
         let categoryName = 'General';
         let staffMentions = '';
         if (channel.topic) {
@@ -334,7 +447,7 @@ async function handleNotifyStaff(interaction) {
             }
         }
 
-        // Obtener el canal de alertas del Staff (1530125195694706769)
+        // 4. Obtener el canal de alertas del Staff (1530125195694706769)
         const staffChannelId = clientConfig.staffAlertsChannelId || '1530125195694706769';
         const staffChannel = interaction.guild.channels.cache.get(staffChannelId);
 
@@ -345,16 +458,20 @@ async function handleNotifyStaff(interaction) {
             });
         }
 
+        const newCount = notifyState.count + 1;
+        const isMaxReached = newCount >= MAX_NOTIFICATIONS_PER_TICKET;
+
         // Embed para el canal de alertas del Staff
         const alertEmbed = new EmbedBuilder()
             .setColor(clientConfig.embedColor)
-            .setTitle('Atención Staff Solicitada')
+            .setTitle(`Atención Staff Solicitada (Alerta ${newCount}/3)`)
             .setDescription(`El usuario <@${interaction.user.id}> está esperando atención en su ticket.`)
             .addFields(
                 { name: 'Ticket', value: `<#${channel.id}> (\`${channel.name}\`)`, inline: true },
                 { name: 'Solicitante', value: `<@${interaction.user.id}> (\`${interaction.user.tag}\`)`, inline: true },
                 { name: 'Categoría', value: categoryName, inline: true },
-                { name: 'Hora', value: `<t:${Math.floor(now / 1000)}:R>`, inline: false }
+                { name: 'Alerta', value: `${newCount} de ${MAX_NOTIFICATIONS_PER_TICKET}`, inline: true },
+                { name: 'Hora', value: `<t:${Math.floor(now / 1000)}:R>`, inline: true }
             )
             .setFooter({ text: clientConfig.footerText })
             .setTimestamp();
@@ -374,16 +491,28 @@ async function handleNotifyStaff(interaction) {
             components: [jumpRow],
         });
 
-        // Registrar timestamp de la alerta
-        channelTimestamps.push(now);
-        notifyStaffCooldowns.set(channel.id, channelTimestamps);
+        // Registrar timestamp y contador actualizados para este canal específico
+        updateChannelNotifyState(channel, newCount, now);
 
-        // Confirmar de forma 100% privada (efímera) al usuario sin dejar embeds en el canal
-        const remainingAlerts = MAX_NOTIFY_PER_WINDOW - channelTimestamps.length;
-        await interaction.reply({
-            content: `Se ha notificado al equipo de Staff en el canal de guardia. Un miembro te atenderá en cuanto esté disponible.\n*(Te quedan ${remainingAlerts} de ${MAX_NOTIFY_PER_WINDOW} alertas disponibles en esta media hora).*`,
-            ephemeral: true,
-        });
+        // Actualizar el botón en el mensaje del ticket (si llega a 3, se deshabilita)
+        try {
+            const updatedComponents = updateNotifyButtonInMessage(interaction.message, newCount, isMaxReached);
+            await interaction.message.edit({ components: updatedComponents }).catch(() => {});
+        } catch {}
+
+        // Confirmar de forma 100% privada (efímera) al usuario
+        if (isMaxReached) {
+            await interaction.reply({
+                content: `Se ha notificado al equipo de Staff en el canal de guardia. Has utilizado tus 3 notificaciones permitidas para este ticket (3/3). El botón ha quedado deshabilitado.`,
+                ephemeral: true,
+            });
+        } else {
+            const remaining = MAX_NOTIFICATIONS_PER_TICKET - newCount;
+            await interaction.reply({
+                content: `Se ha notificado al equipo de Staff en el canal de guardia. Un miembro te atenderá en cuanto esté disponible.\n*(Alerta ${newCount}/3 enviada. Te quedan ${remaining} alerta(s). Podrás enviar la siguiente dentro de 30 minutos si aún no te han respondido).*`,
+                ephemeral: true,
+            });
+        }
     } catch (error) {
         console.error('Error al notificar al staff:', error);
         if (!interaction.replied && !interaction.deferred) {
