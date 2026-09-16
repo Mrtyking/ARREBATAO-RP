@@ -11,7 +11,7 @@ const {
 } = require('discord.js');
 const discordTranscripts = require('discord-html-transcripts');
 const { clientConfig, categories } = require('../config/config');
-const { setTicketClaimed, getTicketState } = require('../utils/ticketState');
+const { setTicketClaimed, getTicketState, addTicketBypass } = require('../utils/ticketState');
 
 /**
  * Determina si un miembro tiene rol de staff o permisos de Administrador
@@ -119,25 +119,11 @@ async function handleCloseTicketSubmit(interaction) {
         const channel = interaction.channel;
         const creatorId = getTicketCreatorId(channel);
 
-        // Confirmar modal inmediatamente para evitar expiración
+        // Confirmar modal inmediatamente en privado (efímero)
         await interaction.reply({
-            content: '**Procesando cierre de ticket...** Generando transcripción y archivando.',
+            content: '**Procesando cierre de ticket...** Generando transcripción y archivando.\n*El canal se eliminará en unos segundos.*',
             ephemeral: true,
         });
-
-        // Notificación visible en el canal
-        const closingEmbed = new EmbedBuilder()
-            .setColor(clientConfig.embedColor)
-            .setTitle('Ticket Cerrado')
-            .setDescription(
-                `Este ticket ha sido cerrado por **${interaction.user.tag}**.\n` +
-                `**Motivo:** ${reason}\n\n` +
-                '*El canal se eliminará definitivamente en 5 segundos...*'
-            )
-            .setFooter({ text: clientConfig.footerText })
-            .setTimestamp();
-
-        await channel.send({ embeds: [closingEmbed] });
 
         // Generar transcripción HTML completa
         let transcriptAttachment = null;
@@ -288,22 +274,9 @@ async function handleClaimTicket(interaction) {
         // Registrar reclamo y otorgar permisos de escritura al staff
         await setTicketClaimed(interaction.channel, interaction.user.id);
 
-        // Avisar en el canal mediante un Embed profesional
-        const claimEmbed = new EmbedBuilder()
-            .setColor(clientConfig.embedColor)
-            .setTitle('Ticket Reclamado')
-            .setDescription(`<@${interaction.user.id}> se ha hecho cargo de este ticket y te atenderá personalmente a partir de ahora.`)
-            .addFields(
-                { name: 'Staff Encargado', value: `<@${interaction.user.id}> (\`${interaction.user.tag}\`)`, inline: true },
-                { name: 'Fecha y Hora', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-            )
-            .setFooter({ text: clientConfig.footerText })
-            .setTimestamp();
-
-        await interaction.channel.send({ embeds: [claimEmbed] });
-
+        // Confirmar únicamente en privado al Staff que lo reclamó
         await interaction.reply({
-            content: 'Has reclamado este ticket con éxito.',
+            content: 'Has reclamado este ticket con éxito. Ahora tienes permisos exclusivos para responder.',
             ephemeral: true,
         });
     } catch (error) {
@@ -317,8 +290,10 @@ async function handleClaimTicket(interaction) {
     }
 }
 
-// Mapa de enfriamiento para evitar spam del botón Notificar Staff (por canal)
+// Mapa de enfriamiento para limitar el botón Notificar Staff a máximo 3 veces cada 30 minutos (por canal)
 const notifyStaffCooldowns = new Map();
+const NOTIFY_WINDOW_MS = 30 * 60 * 1000; // 30 minutos
+const MAX_NOTIFY_PER_WINDOW = 3;
 
 /**
  * Maneja el botón de notificar al Staff cuando un usuario requiere atención
@@ -329,13 +304,16 @@ async function handleNotifyStaff(interaction) {
     try {
         const channel = interaction.channel;
         const now = Date.now();
-        const cooldownTime = 3 * 60 * 1000; // 3 minutos de cooldown por ticket
 
-        const lastNotified = notifyStaffCooldowns.get(channel.id);
-        if (lastNotified && (now - lastNotified) < cooldownTime) {
-            const remainingSeconds = Math.ceil((cooldownTime - (now - lastNotified)) / 1000);
+        // Obtener historial de timestamps de alertas en este canal en los últimos 30 minutos
+        const channelTimestamps = (notifyStaffCooldowns.get(channel.id) || [])
+            .filter(ts => (now - ts) < NOTIFY_WINDOW_MS);
+
+        if (channelTimestamps.length >= MAX_NOTIFY_PER_WINDOW) {
+            const oldest = channelTimestamps[0];
+            const remainingMinutes = Math.ceil((NOTIFY_WINDOW_MS - (now - oldest)) / 60000);
             return interaction.reply({
-                content: `Ya se ha enviado una alerta al Staff recientemente. Por favor espera ${remainingSeconds} segundo(s) antes de volver a notificar.`,
+                content: `Has alcanzado el límite máximo de 3 notificaciones cada media hora para este ticket. Podrás volver a notificar al Staff en aproximadamente ${remainingMinutes} minuto(s).`,
                 ephemeral: true,
             });
         }
@@ -396,22 +374,14 @@ async function handleNotifyStaff(interaction) {
             components: [jumpRow],
         });
 
-        // Registrar timestamp de cooldown
-        notifyStaffCooldowns.set(channel.id, now);
+        // Registrar timestamp de la alerta
+        channelTimestamps.push(now);
+        notifyStaffCooldowns.set(channel.id, channelTimestamps);
 
-        // Notificación visible en el propio canal del ticket
-        const ticketAlertEmbed = new EmbedBuilder()
-            .setColor(clientConfig.embedColor)
-            .setTitle('Alerta de Staff Enviada')
-            .setDescription('Se ha notificado al equipo de Staff sobre este ticket en el canal de guardia. Un miembro te atenderá en cuanto esté disponible.')
-            .setFooter({ text: clientConfig.footerText })
-            .setTimestamp();
-
-        await channel.send({ embeds: [ticketAlertEmbed] });
-
-        // Confirmar efímeramente al usuario
+        // Confirmar de forma 100% privada (efímera) al usuario sin dejar embeds en el canal
+        const remainingAlerts = MAX_NOTIFY_PER_WINDOW - channelTimestamps.length;
         await interaction.reply({
-            content: 'Se ha notificado al equipo de Staff exitosamente.',
+            content: `Se ha notificado al equipo de Staff en el canal de guardia. Un miembro te atenderá en cuanto esté disponible.\n*(Te quedan ${remainingAlerts} de ${MAX_NOTIFY_PER_WINDOW} alertas disponibles en esta media hora).*`,
             ephemeral: true,
         });
     } catch (error) {
@@ -427,6 +397,95 @@ async function handleNotifyStaff(interaction) {
 
 // Mantener compatibilidad de alias
 const handleNotifyUser = handleNotifyStaff;
+
+/**
+ * Abre el modal para solicitar la ID del usuario a añadir al ticket
+ * @param {import('discord.js').ButtonInteraction} interaction
+ */
+async function handleAddUserModalOpen(interaction) {
+    try {
+        const modal = new ModalBuilder()
+            .setCustomId('modal_add_user')
+            .setTitle('Añadir Usuario al Ticket');
+
+        const userIdInput = new TextInputBuilder()
+            .setCustomId('add_user_id')
+            .setLabel('ID de Discord del usuario a añadir')
+            .setPlaceholder('Ej: 123456789012345678')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false)
+            .setMaxLength(30);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(userIdInput));
+        await interaction.showModal(modal);
+    } catch (error) {
+        console.error('Error al abrir modal para añadir usuario:', error);
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+                content: `Ocurrió un error al abrir el formulario: ${error.message}`,
+                ephemeral: true,
+            });
+        }
+    }
+}
+
+/**
+ * Procesa la adición de un usuario al ticket mediante su ID desde el modal
+ * @param {import('discord.js').ModalSubmitInteraction} interaction
+ */
+async function handleAddUserSubmit(interaction) {
+    try {
+        const rawInput = interaction.fields.getTextInputValue('add_user_id')?.trim() || '';
+        const targetId = rawInput.replace(/\D/g, '');
+
+        if (!targetId || targetId.length < 17 || targetId.length > 20) {
+            return interaction.reply({
+                content: 'Debes ingresar una ID numérica válida de Discord (17 a 20 dígitos).',
+                ephemeral: true,
+            });
+        }
+
+        let targetMember;
+        try {
+            targetMember = await interaction.guild.members.fetch(targetId);
+        } catch {
+            targetMember = null;
+        }
+
+        if (!targetMember) {
+            return interaction.reply({
+                content: `No se encontró ningún miembro con la ID \`${targetId}\` en este servidor.`,
+                ephemeral: true,
+            });
+        }
+
+        // Otorgar permisos al usuario y registrarlo en bypassed
+        await addTicketBypass(interaction.channel, targetMember.id);
+
+        // Confirmación privada efímera
+        await interaction.reply({
+            content: `El usuario <@${targetMember.id}> (${targetMember.user.tag}) ha sido añadido exitosamente a este ticket.`,
+            ephemeral: true,
+        });
+
+        // Mensaje sutil en el canal para notificar a la persona añadida con auto-eliminación
+        const notice = await interaction.channel.send({
+            content: `<@${targetMember.id}>, has sido añadido a este ticket por <@${interaction.user.id}>.`,
+        }).catch(() => {});
+
+        if (notice) {
+            setTimeout(() => notice.delete().catch(() => {}), 15000);
+        }
+    } catch (error) {
+        console.error('Error al procesar adición de usuario:', error);
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+                content: `Ocurrió un error al añadir al usuario: ${error.message}`,
+                ephemeral: true,
+            });
+        }
+    }
+}
 
 /**
  * Genera una transcripción HTML bajo demanda y la envía al canal y logs
@@ -504,5 +563,7 @@ module.exports = {
     handleClaimTicket,
     handleNotifyStaff,
     handleNotifyUser,
+    handleAddUserModalOpen,
+    handleAddUserSubmit,
     handleGenerateTranscript,
 };

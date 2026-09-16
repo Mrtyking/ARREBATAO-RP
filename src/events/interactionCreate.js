@@ -9,6 +9,8 @@ const {
     handleClaimTicket,
     handleNotifyStaff,
     handleNotifyUser,
+    handleAddUserModalOpen,
+    handleAddUserSubmit,
     handleGenerateTranscript,
 } = require('../handlers/ticketControlHandler');
 
@@ -52,6 +54,9 @@ module.exports = {
                     case 'ticket_control_notify':
                         await handleNotifyStaff(interaction);
                         return;
+                    case 'ticket_control_adduser':
+                        await handleAddUserModalOpen(interaction);
+                        return;
                     case 'ticket_control_transcript':
                         await handleGenerateTranscript(interaction);
                         return;
@@ -82,6 +87,11 @@ module.exports = {
 
                 if (customId === 'modal_close_ticket_reason') {
                     await handleCloseTicketSubmit(interaction);
+                    return;
+                }
+
+                if (customId === 'modal_add_user') {
+                    await handleAddUserSubmit(interaction);
                     return;
                 }
             }
