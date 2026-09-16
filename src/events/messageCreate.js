@@ -14,10 +14,10 @@ module.exports = {
                 return;
             }
 
-            // Responder "ARREBATAO RP ON TOP @user" al poner un "." en cualquier canal
+            // Responder "𝐀𝐑𝐑𝐄𝐁𝐀𝐓𝐀𝐎 𝐑𝐏 𝐎𝐍 𝐓𝐎𝐏 @user" al poner un "." en cualquier canal
             if (message.content.trim() === '.') {
                 await message.reply({
-                    content: `ARREBATAO RP ON TOP <@${message.author.id}>`,
+                    content: `𝐀𝐑𝐑𝐄𝐁𝐀𝐓𝐀𝐎 𝐑𝐏 𝐎𝐍 𝐓𝐎𝐏 <@${message.author.id}>`,
                     allowedMentions: { users: [message.author.id] },
                 }).catch(() => {});
                 return;
