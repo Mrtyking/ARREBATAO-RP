@@ -1,5 +1,5 @@
-﻿const { Events, PermissionFlagsBits } = require('discord.js');
-const { categories } = require('../config/config');
+const { Events, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
+const { categories, clientConfig } = require('../config/config');
 const { getTicketState } = require('../utils/ticketState');
 const { getTicketCreatorId } = require('../handlers/ticketControlHandler');
 
@@ -39,8 +39,15 @@ module.exports = {
                 if (!state.bypassed.has(message.author.id)) {
                     await message.delete().catch(() => {});
 
+                    const warnEmbed = new EmbedBuilder()
+                        .setColor(clientConfig.embedColor)
+                        .setTitle('Ticket No Reclamado')
+                        .setDescription('Para responder en este canal debes presionar el botón **Reclamar Ticket** primero (o usar `/bypass`).')
+                        .setFooter({ text: 'Este aviso se eliminará automáticamente en 5 segundos.' });
+
                     const warnMsg = await channel.send({
-                        content: `<@${message.author.id}>, no puedes responder en este ticket porque **aún no ha sido reclamado**. Por favor presiona el botón **Reclamar Ticket** primero (o utiliza \`/bypass\`).`,
+                        content: `<@${message.author.id}>`,
+                        embeds: [warnEmbed],
                     }).catch(() => {});
 
                     if (warnMsg) {
@@ -60,8 +67,15 @@ module.exports = {
                     await message.delete().catch(() => {});
 
                     const claimerMention = state.claimedBy ? `<@${state.claimedBy}>` : 'otro miembro del Staff';
+                    const warnEmbed = new EmbedBuilder()
+                        .setColor(clientConfig.embedColor)
+                        .setTitle('Ticket Asignado')
+                        .setDescription(`Este caso está siendo atendido por ${claimerMention}. Solo el staff encargado puede responder (o utiliza \`/bypass\`).`)
+                        .setFooter({ text: 'Este aviso se eliminará automáticamente en 5 segundos.' });
+
                     const warnMsg = await channel.send({
-                        content: `<@${message.author.id}>, este ticket está reclamado por ${claimerMention}. Solo el staff encargado puede responder, a menos que uses el comando \`/bypass\`.`,
+                        content: `<@${message.author.id}>`,
+                        embeds: [warnEmbed],
                     }).catch(() => {});
 
                     if (warnMsg) {
