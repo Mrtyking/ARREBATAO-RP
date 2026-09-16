@@ -250,10 +250,6 @@ function createTicketActionButtons(options = {}) {
         new ButtonBuilder()
             .setCustomId('ticket_control_notify')
             .setLabel('Notificar Staff')
-            .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-            .setCustomId('ticket_control_adduser')
-            .setLabel('Añadir Usuario')
             .setStyle(ButtonStyle.Secondary)
     );
 }
