@@ -11,6 +11,7 @@ const clientConfig = {
     guildId: process.env.GUILD_ID || '',
     logsChannelId: process.env.LOGS_CHANNEL_ID || '',
     staffAlertsChannelId: process.env.STAFF_ALERTS_CHANNEL_ID || '1530125195694706769',
+    feedbackChannelId: process.env.FEEDBACK_CHANNEL_ID || '1530125044603424868',
     embedColor: '#990000',
     maxTicketsPerUser: 2,
     maxTicketsPerCategory: 1,

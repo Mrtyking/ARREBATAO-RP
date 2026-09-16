@@ -11,7 +11,15 @@ const {
 } = require('discord.js');
 const discordTranscripts = require('discord-html-transcripts');
 const { clientConfig, categories } = require('../config/config');
-const { setTicketClaimed, getTicketState, addTicketBypass } = require('../utils/ticketState');
+const {
+    setTicketClaimed,
+    getTicketState,
+    addTicketBypass,
+    setTicketCloseInitiator,
+} = require('../utils/ticketState');
+
+// Set en memoria para canales en proceso de cierre (evita ejecuciones dobles)
+const closingTickets = new Set();
 
 /**
  * Determina si un miembro tiene rol de staff o permisos de Administrador
@@ -77,35 +85,77 @@ function getTicketCreatorId(channel) {
 }
 
 /**
- * Abre el modal de motivo al presionar el botón de cerrar ticket
+ * Inicia el proceso de cierre del ticket enviando un embed al canal con botones del 1 al 5 y botón de cancelar
+ * para que el creador califique el servicio antes de cerrar.
+ *
  * @param {import('discord.js').ButtonInteraction} interaction
  */
 async function handleCloseTicket(interaction) {
     try {
+        const channel = interaction.channel;
+
         // Solo los miembros del Staff pueden cerrar tickets
-        if (!isStaffMember(interaction.member, interaction.channel)) {
+        if (!isStaffMember(interaction.member, channel)) {
             return interaction.reply({
                 content: 'Solo los miembros del equipo de Staff tienen autorización para cerrar este ticket.',
                 ephemeral: true,
             });
         }
 
-        const modal = new ModalBuilder()
-            .setCustomId('modal_close_ticket_reason')
-            .setTitle('Cierre de Ticket');
+        if (closingTickets.has(channel.id)) {
+            return interaction.reply({
+                content: 'El ticket ya se encuentra en proceso de cierre.',
+                ephemeral: true,
+            });
+        }
 
-        const reasonInput = new TextInputBuilder()
-            .setCustomId('close_reason')
-            .setLabel('Motivo del cierre')
-            .setPlaceholder('Ej: Caso resuelto / Inactividad / Reporte completado')
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(false)
-            .setMaxLength(500);
+        const state = getTicketState(channel);
+        if (state.closeRequested) {
+            return interaction.reply({
+                content: 'Ya se envió una solicitud de calificación a este canal. Si el usuario no responde, puedes presionar **Cerrar sin Calificar**.',
+                ephemeral: true,
+            });
+        }
 
-        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
-        await interaction.showModal(modal);
+        const creatorId = state.creatorId || getTicketCreatorId(channel);
+        setTicketCloseInitiator(channel, interaction.user.id);
+        state.closeRequested = true;
+
+        const rateEmbed = new EmbedBuilder()
+            .setColor(clientConfig.embedColor)
+            .setTitle('VALORACIÓN DEL SERVICIO')
+            .setDescription(
+                (creatorId ? `Hola <@${creatorId}>, nuestro equipo ha completado la atención de tu ticket.\n\n` : 'El equipo ha completado la atención de este ticket.\n\n') +
+                'Por favor, califica la atención recibida seleccionando una opción del **1 al 5** a continuación.\n' +
+                '*Al calificar, el ticket se archivará y cerrará automáticamente.*\n\n' +
+                '*Si el usuario no está disponible o el staff desea cerrar de inmediato, presiona **Cerrar sin Calificar**.*'
+            )
+            .setFooter({ text: clientConfig.footerText });
+
+        const starRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('ticket_rate_val_1').setLabel('1').setEmoji('⭐').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('ticket_rate_val_2').setLabel('2').setEmoji('⭐').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('ticket_rate_val_3').setLabel('3').setEmoji('⭐').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('ticket_rate_val_4').setLabel('4').setEmoji('⭐').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('ticket_rate_val_5').setLabel('5').setEmoji('⭐').setStyle(ButtonStyle.Success),
+        );
+
+        const cancelRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('ticket_rate_cancel').setLabel('Cerrar sin Calificar').setStyle(ButtonStyle.Danger),
+        );
+
+        await channel.send({
+            content: creatorId ? `<@${creatorId}>` : undefined,
+            embeds: [rateEmbed],
+            components: [starRow, cancelRow],
+        });
+
+        await interaction.reply({
+            content: 'Solicitud de valoración enviada al ticket.',
+            ephemeral: true,
+        });
     } catch (error) {
-        console.error('Error al abrir modal de cierre:', error);
+        console.error('Error al iniciar cierre y calificación:', error);
         if (!interaction.replied && !interaction.deferred) {
             await interaction.reply({
                 content: `Ocurrió un error al preparar el cierre: ${error.message}`,
@@ -116,58 +166,234 @@ async function handleCloseTicket(interaction) {
 }
 
 /**
- * Procesa el cierre definitivo del ticket tras enviar el motivo en el modal:
- * Genera transcripción HTML, envía copia a logs y MD, y elimina el canal con cuenta regresiva
+ * Maneja cuando el creador pulsa un botón de calificación (1 a 5)
+ * Despliega un modal para que pueda dejar un comentario opcional sobre el servicio
  *
- * @param {import('discord.js').ModalSubmitInteraction} interaction
+ * @param {import('discord.js').ButtonInteraction} interaction
  */
-async function handleCloseTicketSubmit(interaction) {
+async function handleRateButton(interaction) {
     try {
-        // Solo los miembros del Staff pueden procesar el cierre del ticket
-        if (!isStaffMember(interaction.member, interaction.channel)) {
+        const channel = interaction.channel;
+        if (closingTickets.has(channel.id)) {
             return interaction.reply({
-                content: 'Solo los miembros del equipo de Staff tienen autorización para cerrar este ticket.',
+                content: 'El ticket ya se encuentra en proceso de cierre.',
                 ephemeral: true,
             });
         }
 
-        const reason = interaction.fields.getTextInputValue('close_reason')?.trim() || 'Sin motivo especificado';
-        const channel = interaction.channel;
-        const creatorId = getTicketCreatorId(channel);
+        const state = getTicketState(channel);
+        const creatorId = state.creatorId || getTicketCreatorId(channel);
 
-        // Confirmar modal inmediatamente en privado (efímero)
+        // Solo el creador puede calificar
+        if (creatorId && interaction.user.id !== creatorId) {
+            return interaction.reply({
+                content: `Solo el usuario creador del ticket (<@${creatorId}>) puede calificar el servicio.`,
+                ephemeral: true,
+            });
+        }
+
+        const rating = parseInt(interaction.customId.replace('ticket_rate_val_', ''), 10) || 5;
+
+        const modal = new ModalBuilder()
+            .setCustomId(`modal_ticket_feedback_${rating}`)
+            .setTitle(`Valoración (${rating}/5 Estrellas)`);
+
+        const commentInput = new TextInputBuilder()
+            .setCustomId('feedback_comment')
+            .setLabel('Comentario u opinión (Opcional)')
+            .setPlaceholder('Escribe tu opinión sobre el servicio recibido...')
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(false)
+            .setMaxLength(500);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(commentInput));
+        await interaction.showModal(modal);
+    } catch (error) {
+        console.error('Error al abrir modal de calificación:', error);
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+                content: `Ocurrió un error al procesar la calificación: ${error.message}`,
+                ephemeral: true,
+            });
+        }
+    }
+}
+
+/**
+ * Procesa el envío del modal de valoración:
+ * Envía el embed formateado a # ✨・Valoraciones (1530125044603424868)
+ * y cierra automáticamente el ticket generando transcripción y eliminando el canal.
+ *
+ * @param {import('discord.js').ModalSubmitInteraction} interaction
+ */
+async function handleFeedbackModalSubmit(interaction) {
+    try {
+        const channel = interaction.channel;
+        if (closingTickets.has(channel.id)) {
+            return interaction.reply({
+                content: 'El ticket ya se encuentra en proceso de cierre.',
+                ephemeral: true,
+            });
+        }
+        closingTickets.add(channel.id);
+
+        const state = getTicketState(channel);
+        const creatorId = state.creatorId || getTicketCreatorId(channel) || interaction.user.id;
+        const rating = parseInt(interaction.customId.replace('modal_ticket_feedback_', ''), 10) || 5;
+        const comment = interaction.fields.getTextInputValue('feedback_comment')?.trim() || 'Sin comentario adicional';
+
         await interaction.reply({
-            content: '**Procesando cierre de ticket...** Generando transcripción y archivando.\n*El canal se eliminará en unos segundos.*',
+            content: '¡Muchas gracias por tu valoración! El ticket se está procesando para su cierre...',
             ephemeral: true,
         });
 
-        // Generar transcripción HTML completa
-        let transcriptAttachment = null;
+        await channel.send({
+            content: `**Valoración registrada (${rating}/5 estrellas).** El canal se archivará y cerrará en 5 segundos...`,
+        }).catch(() => {});
+
+        // Enviar embed de valoración al canal configurado (1530125044603424868)
         try {
-            transcriptAttachment = await discordTranscripts.createTranscript(channel, {
-                limit: -1,
-                returnType: 'attachment',
-                fileName: `transcript-${channel.name}.html`,
-                minify: true,
-                saveImages: true,
-                poweredBy: false,
-            });
-        } catch (transcriptError) {
-            console.error('Error al generar transcripción HTML:', transcriptError);
+            const feedbackChannelId = clientConfig.feedbackChannelId;
+            if (feedbackChannelId) {
+                const feedbackChannel = interaction.guild.channels.cache.get(feedbackChannelId) ||
+                    await interaction.guild.channels.fetch(feedbackChannelId).catch(() => null);
+
+                if (feedbackChannel && feedbackChannel.isTextBased()) {
+                    const starsString = '⭐'.repeat(rating);
+                    const staffId = state.claimedBy || state.closeInitiatedBy;
+
+                    const dateStr = new Intl.DateTimeFormat('es-ES', {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric',
+                    }).format(new Date());
+
+                    const feedbackEmbed = new EmbedBuilder()
+                        .setColor(clientConfig.embedColor)
+                        .setTitle('NUEVA VALORACIÓN RECIBIDA')
+                        .setDescription(`El usuario <@${interaction.user.id}> ha dejado su opinión sobre el servicio.`)
+                        .addFields(
+                            { name: 'Usuario', value: `<@${interaction.user.id}> ( \`${interaction.user.id}\` )`, inline: false },
+                            { name: 'Calificación', value: `${rating} / 5 Estrellas ( ${starsString} )`, inline: false },
+                            { name: 'Comentario', value: `*"${comment}"*`, inline: false }
+                        );
+
+                    if (staffId) {
+                        feedbackEmbed.addFields({
+                            name: 'Atendido por',
+                            value: `<@${staffId}> ( \`${staffId}\` )`,
+                            inline: false,
+                        });
+                    }
+
+                    feedbackEmbed.setFooter({ text: `© ARREBATAO RP - Review enviada el ${dateStr}` });
+
+                    await feedbackChannel.send({ embeds: [feedbackEmbed] }).catch(err => {
+                        console.error('Error al enviar embed a canal de valoraciones:', err);
+                    });
+                }
+            }
+        } catch (fbErr) {
+            console.error('Error al enviar valoración:', fbErr);
         }
 
-        // Enviar al canal de logs si está configurado
-        if (clientConfig.logsChannelId && transcriptAttachment) {
-            const logsChannel = interaction.guild.channels.cache.get(clientConfig.logsChannelId);
+        // Ejecutar cierre definitivo
+        await executeTicketClosure(channel, interaction.user, `Ticket calificado (${rating}/5): ${comment}`, interaction.client, creatorId);
+    } catch (error) {
+        console.error('Error al procesar modal de valoración:', error);
+        closingTickets.delete(interaction.channel.id);
+    }
+}
+
+/**
+ * Maneja cuando el staff (o el creador) cancela la espera de calificación y cierra directamente
+ *
+ * @param {import('discord.js').ButtonInteraction} interaction
+ */
+async function handleRateCancel(interaction) {
+    try {
+        const channel = interaction.channel;
+        if (closingTickets.has(channel.id)) {
+            return interaction.reply({
+                content: 'El ticket ya se encuentra en proceso de cierre.',
+                ephemeral: true,
+            });
+        }
+
+        const state = getTicketState(channel);
+        const creatorId = state.creatorId || getTicketCreatorId(channel);
+        const isStaff = isStaffMember(interaction.member, channel);
+        const isCreator = creatorId && interaction.user.id === creatorId;
+
+        if (!isStaff && !isCreator) {
+            return interaction.reply({
+                content: 'Solo los miembros del equipo de Staff o el creador del ticket pueden ejecutar esta acción.',
+                ephemeral: true,
+            });
+        }
+
+        closingTickets.add(channel.id);
+
+        await interaction.reply({
+            content: 'Cierre sin valoración confirmado. Archivando y eliminando ticket...',
+            ephemeral: true,
+        });
+
+        await channel.send({
+            content: '**Cierre sin valoración.** El ticket se archivará y eliminará en 5 segundos...',
+        }).catch(() => {});
+
+        await executeTicketClosure(channel, interaction.user, 'Ticket cerrado sin valoración', interaction.client, creatorId);
+    } catch (error) {
+        console.error('Error al cancelar valoración y cerrar ticket:', error);
+        closingTickets.delete(interaction.channel.id);
+    }
+}
+
+/**
+ * Ejecuta el cierre definitivo de un canal de ticket:
+ * Genera transcripción HTML, envía copias a logs y MD del creador, y elimina el canal
+ *
+ * @param {import('discord.js').GuildChannel} channel
+ * @param {import('discord.js').User} closedByUser
+ * @param {string} reason
+ * @param {import('discord.js').Client} client
+ * @param {string|null} creatorId
+ */
+async function executeTicketClosure(channel, closedByUser, reason, client, creatorId = null) {
+    if (!channel) return;
+    if (!creatorId) creatorId = getTicketCreatorId(channel);
+
+    // 1. Generar transcripción HTML completa
+    let transcriptAttachment = null;
+    try {
+        transcriptAttachment = await discordTranscripts.createTranscript(channel, {
+            limit: -1,
+            returnType: 'attachment',
+            fileName: `transcript-${channel.name}.html`,
+            minify: true,
+            saveImages: true,
+            poweredBy: false,
+        });
+    } catch (transcriptError) {
+        console.error('Error al generar transcripción HTML:', transcriptError);
+    }
+
+    // 2. Enviar al canal de logs si está configurado
+    if (clientConfig.logsChannelId && transcriptAttachment) {
+        try {
+            const logsChannel = channel.guild.channels.cache.get(clientConfig.logsChannelId) ||
+                await channel.guild.channels.fetch(clientConfig.logsChannelId).catch(() => null);
+
             if (logsChannel && logsChannel.isTextBased()) {
                 const logEmbed = new EmbedBuilder()
                     .setColor(clientConfig.embedColor)
                     .setTitle('Ticket Cerrado - Transcripción Archivada')
                     .addFields(
                         { name: 'Canal / Ticket', value: `\`${channel.name}\``, inline: true },
-                        { name: 'Cerrado por', value: `<@${interaction.user.id}> (\`${interaction.user.id}\`)`, inline: true },
+                        { name: 'Cerrado por', value: `<@${closedByUser.id}> (\`${closedByUser.id}\`)`, inline: true },
                         { name: 'Creador', value: creatorId ? `<@${creatorId}> (\`${creatorId}\`)` : '*Desconocido*', inline: true },
-                        { name: 'Motivo de Cierre', value: reason, inline: false },
+                        { name: 'Motivo / Estado', value: reason, inline: false },
                         { name: 'Fecha y Hora', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
                     )
                     .setFooter({ text: clientConfig.footerText })
@@ -178,47 +404,74 @@ async function handleCloseTicketSubmit(interaction) {
                     files: [transcriptAttachment],
                 }).catch(err => console.error('Error al enviar log de cierre:', err));
             }
+        } catch (logErr) {
+            console.error('Error al procesar logs de cierre:', logErr);
+        }
+    }
+
+    // 3. Intentar enviar transcripción por mensaje directo (DM) al usuario creador
+    if (creatorId && transcriptAttachment) {
+        try {
+            const creatorUser = await client.users.fetch(creatorId).catch(() => null);
+            if (creatorUser) {
+                const dmEmbed = new EmbedBuilder()
+                    .setColor(clientConfig.embedColor)
+                    .setTitle('Tu ticket en ARREBATAO RP ha sido cerrado')
+                    .setDescription(
+                        `Hola <@${creatorId}>, tu ticket **#${channel.name}** ha finalizado.\n\n` +
+                        `• **Cerrado por:** ${closedByUser.tag || closedByUser.username}\n` +
+                        `• **Motivo / Estado:** ${reason}\n\n` +
+                        'Adjunto a este mensaje encontrarás la **transcripción completa en formato HTML** con todos los mensajes y archivos compartidos.'
+                    )
+                    .setFooter({ text: clientConfig.footerText })
+                    .setTimestamp();
+
+                await creatorUser.send({
+                    embeds: [dmEmbed],
+                    files: [transcriptAttachment],
+                }).catch(() => {});
+            }
+        } catch (dmErr) {
+            console.log(`No se pudo enviar MD al creador (${creatorId}): ${dmErr.message}`);
+        }
+    }
+
+    // 4. Cuenta regresiva y eliminación segura del canal tras 5 segundos
+    setTimeout(async () => {
+        try {
+            if (channel.deletable) {
+                await channel.delete(`Ticket cerrado por ${closedByUser.tag || closedByUser.username}: ${reason}`);
+            }
+        } catch (delErr) {
+            console.error('Error al eliminar canal de ticket:', delErr);
+        } finally {
+            closingTickets.delete(channel.id);
+        }
+    }, 5000);
+}
+
+/**
+ * Fallback para modal de cierre manual si se utiliza
+ * @param {import('discord.js').ModalSubmitInteraction} interaction
+ */
+async function handleCloseTicketSubmit(interaction) {
+    try {
+        if (!isStaffMember(interaction.member, interaction.channel)) {
+            return interaction.reply({
+                content: 'Solo los miembros del equipo de Staff tienen autorización para cerrar este ticket.',
+                ephemeral: true,
+            });
         }
 
-        // Intentar enviar transcripción por mensaje directo (DM) al usuario creador
-        if (creatorId && transcriptAttachment) {
-            try {
-                const creatorUser = await interaction.client.users.fetch(creatorId);
-                if (creatorUser) {
-                    const dmEmbed = new EmbedBuilder()
-                        .setColor(clientConfig.embedColor)
-                        .setTitle('Tu ticket en ARREBATAO RP ha sido cerrado')
-                        .setDescription(
-                            `Hola <@${creatorId}>, tu ticket **#${channel.name}** ha finalizado.\n\n` +
-                            `• **Cerrado por:** ${interaction.user.tag}\n` +
-                            `• **Motivo:** ${reason}\n\n` +
-                            'Adjunto a este mensaje encontrarás la **transcripción completa en formato HTML** con todos los mensajes y archivos compartidos.'
-                        )
-                        .setFooter({ text: clientConfig.footerText })
-                        .setTimestamp();
+        const reason = interaction.fields.getTextInputValue('close_reason')?.trim() || 'Sin motivo especificado';
+        await interaction.reply({
+            content: '**Procesando cierre de ticket...** Generando transcripción y archivando.\n*El canal se eliminará en unos segundos.*',
+            ephemeral: true,
+        });
 
-                    await creatorUser.send({
-                        embeds: [dmEmbed],
-                        files: [transcriptAttachment],
-                    });
-                }
-            } catch (dmErr) {
-                console.log(`No se pudo enviar MD al creador (${creatorId}): ${dmErr.message}`);
-            }
-        }
-
-        // Cuenta regresiva y eliminación segura del canal
-        setTimeout(async () => {
-            try {
-                if (channel.deletable) {
-                    await channel.delete(`Ticket cerrado por ${interaction.user.tag}: ${reason}`);
-                }
-            } catch (delErr) {
-                console.error('Error al eliminar canal de ticket:', delErr);
-            }
-        }, 5000);
+        await executeTicketClosure(interaction.channel, interaction.user, reason, interaction.client);
     } catch (error) {
-        console.error('Error durante el proceso de cierre del ticket:', error);
+        console.error('Error en handleCloseTicketSubmit:', error);
     }
 }
 
@@ -695,4 +948,8 @@ module.exports = {
     handleAddUserModalOpen,
     handleAddUserSubmit,
     handleGenerateTranscript,
+    handleRateButton,
+    handleRateCancel,
+    handleFeedbackModalSubmit,
+    executeTicketClosure,
 };

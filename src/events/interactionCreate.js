@@ -12,6 +12,9 @@ const {
     handleAddUserModalOpen,
     handleAddUserSubmit,
     handleGenerateTranscript,
+    handleRateButton,
+    handleRateCancel,
+    handleFeedbackModalSubmit,
 } = require('../handlers/ticketControlHandler');
 
 module.exports = {
@@ -40,6 +43,18 @@ module.exports = {
                 if (customId.startsWith('ticket_btn_open_')) {
                     const categoryId = customId.replace('ticket_btn_open_', '');
                     await handleTicketOpenTrigger(interaction, categoryId);
+                    return;
+                }
+
+                // Botones de valoración del servicio (1 a 5 estrellas)
+                if (customId.startsWith('ticket_rate_val_')) {
+                    await handleRateButton(interaction);
+                    return;
+                }
+
+                // Botón de cancelación de valoración (cerrar directamente sin calificar)
+                if (customId === 'ticket_rate_cancel') {
+                    await handleRateCancel(interaction);
                     return;
                 }
 
@@ -82,6 +97,11 @@ module.exports = {
 
                 if (customId.startsWith('ticket_modal_')) {
                     await handleTicketModalSubmit(interaction);
+                    return;
+                }
+
+                if (customId.startsWith('modal_ticket_feedback_')) {
+                    await handleFeedbackModalSubmit(interaction);
                     return;
                 }
 

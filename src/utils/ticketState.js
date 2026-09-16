@@ -1,4 +1,4 @@
-﻿const { STAFF_ACTIVE_PERMISSIONS } = require('./permissions');
+const { STAFF_ACTIVE_PERMISSIONS } = require('./permissions');
 
 // Cache en memoria para bypasses y estados rápidos: Map<channelId, { claimedBy: string|null, bypassed: Set<string> }>
 const ticketStateCache = new Map();
@@ -34,8 +34,10 @@ function getTicketState(channel) {
 
     // Combinar con la memoria en ejecución si existe
     const cached = ticketStateCache.get(channel.id);
+    let closeInitiatedBy = null;
     if (cached) {
         if (cached.claimedBy) claimedBy = cached.claimedBy;
+        if (cached.closeInitiatedBy) closeInitiatedBy = cached.closeInitiatedBy;
         cached.bypassed.forEach(id => bypassed.add(id));
     }
 
@@ -44,6 +46,7 @@ function getTicketState(channel) {
         claimedBy,
         bypassed,
         creatorId,
+        closeInitiatedBy,
     };
 }
 
@@ -125,8 +128,20 @@ async function addTicketBypass(channel, staffId) {
     }
 }
 
+/**
+ * Registra al miembro del staff que inició la solicitud de cierre del ticket
+ * @param {import('discord.js').GuildChannel} channel
+ * @param {string} staffId
+ */
+function setTicketCloseInitiator(channel, staffId) {
+    const current = ticketStateCache.get(channel.id) || getTicketState(channel);
+    current.closeInitiatedBy = staffId;
+    ticketStateCache.set(channel.id, current);
+}
+
 module.exports = {
     getTicketState,
     setTicketClaimed,
     addTicketBypass,
+    setTicketCloseInitiator,
 };
